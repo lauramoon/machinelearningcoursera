@@ -9,19 +9,87 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## Testing GitHub Pages
-
-Just seeing if this works....
-```{r cars}
-summary(cars)
+```{r, include=FALSE}
+require(caret)
 ```
 
-## Including Plots
+## Synopsis
 
-You can also embed plots, for example:
+The Weight Lifting Exercise Dataset provides data collected from accelerometers while participants performed weight lifting exercises correctly and incorrectly. More information and credit for the data may be found here: http://groupware.les.inf.puc-rio.br/har. In this project, we use machine learning methods to differentiate between the different weight lifting methods.
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+We fit several models to a small subset of the training data and selected the model with boosting on trees to train on a larger training set. The resulting model predicted with 96% accuracy on the remaining data.
+
+## Data Processing
+
+We download the data from the course website and load into R:
+```{r, cache=TRUE}
+url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+download.file(url, "pml-training.csv")
+data <- read.csv("pml-training.csv")
+```
+The dataset contains 19622 observations of 160 variables:
+```{r}
+dim(data)
+```
+The final field "classe" identifies which weight lifting method that the participant was using.
+
+A closer examination of the data shows that many of the variables are calculated periodically, with values only found in the rows where the "new_window" variable is "yes". There are 406 such rows with aggregated data:
+```{r}
+table(data$new_window)
+```
+Using only these rows would provide more variables to work with. However, a quick review of the test data shows that all of the test data have the "new_window" variable as "no", so these calculated fields will not be helpful in building a model.
+
+It should also be noted that the "raw_timestamp_part_1" variable can be used to match the test data with corresponding data in the training set to discover the exercise classe. However, in a real-world application, this data would be irrelevant; only the accelerometer data will be used for this analysis.
+
+We create a dataset from the training data with only (1) the accelerometer data variables with values for every observation and (2) the classe variable. There is undoubtedly a more elegant way to select the variables meeting these criteria, but a visual review of the columns leads to these choices:
+```{r}
+dataclean <- data[,c(8:11,37:49,60:68, 84:86, 113:124, 140, 151:160)]
+```
+These are the variable names selected:
+```{r}
+names(dataclean)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+## Test Models
+Using the caret package in R, we try several different models: random forest ("rf"), boosting with trees ("gbm"), and linear discriminant analysis ("lda"). The initial attempt to fit a random forest model to 90% of the training data took too long; the calculation was terminated after more than 15 minutes. So we instead fit each model to 10% of the data. We use a simple data partition to select this subset.
+
+```{r, cache=TRUE, message=FALSE}
+set.seed(1234)
+intrain <- createDataPartition(dataclean$classe, p=.1)[[1]]
+datatrain10 <- dataclean[intrain,]
+datatest10 <- dataclean[-intrain,]
+modrf <- train(classe~., data = datatrain10, method="rf")
+modgbm <- train(classe~., data = datatrain10, method="gbm", verbose=FALSE)
+modlda <- train(classe~., data = datatrain10, method="lda")
+```
+Then we use each model to predict the classe on the remaining 90% of the training data (treating it as test data):
+```{r, cache=TRUE, message=FALSE}
+predrf <- predict(modrf,datatest10)
+predrightrf <- predrf==datatest10$classe
+rfacc <- sum(predrightrf)/nrow(datatest10)
+predgbm <- predict(modgbm,datatest10)
+predrightgbm <- predgbm==datatest10$classe
+gbmacc <- sum(predrightgbm)/nrow(datatest10)
+predlda <- predict(modlda,datatest10)
+predrightlda <- predlda==datatest10$classe
+ldaacc <- sum(predrightlda)/nrow(datatest10)
+print(c("rf"=rfacc,"gbm"=gbmacc,"lda"=ldaacc))
+```
+The random forest and boosting models clearly do much better than linear discriminant analysis. The boosting method seems to take less time to train the model, so we choose to use it for our final model with a larger training set.
+
+## Final Model
+We use a generalized boosting model on regression trees on 70% of the training data provided and test it on the remaining 30%. Again, we use a simple data partition to select the 70% of the data on which we train the model. 
+
+It is possible that treating the data as a time series could produce a better model, but the 20 test data points withheld for this assignment do not provide any time-related context, so we treat each observation as independent.
+```{r, cache=TRUE, message=FALSE}
+set.seed(12345)
+intrain70 <- createDataPartition(dataclean$classe, p=.7)[[1]]
+datatrain70 <- dataclean[intrain70,]
+datatest70 <- dataclean[-intrain70,]
+modfinal <- train(classe~., data = datatrain70, method="gbm", verbose=FALSE)
+predfinal <- predict(modfinal, datatest70)
+finalright <- predfinal==datatest70$classe
+finalacc <- sum(finalright)/nrow(datatest70)
+print(finalacc)
+```
+The model takes over 20 minutes to produce, but is `r round(finalacc*100, 1)`% accurate on data not used to train the model.
